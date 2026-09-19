@@ -5,10 +5,6 @@ on:
   push:
     paths:
       - '.github/workflows/build-v6-android.yml'
-      - 'app/**'
-      - 'build.gradle'
-      - 'settings.gradle'
-      - 'gradle.properties'
 
 jobs:
   build:
@@ -24,31 +20,276 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # GitHub's Ubuntu runner already includes the Android SDK.
-      # We deliberately do not use android-actions/setup-android here,
-      # because that step is what failed in the previous run.
-      - name: Check Android SDK
+      - name: Create Android project
+        shell: bash
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          "$ANDROID_HOME/platform-tools/adb" version
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
+          mkdir -p app/src/main/java/com/controllerbridge/v6
+          mkdir -p app/src/main/res/values
 
-      - name: Accept Android SDK licenses
-        run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "ControllerBridgeV6"
+          include(":app")
+          EOF
 
-      - name: Install required Android SDK packages
-        run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"             "platform-tools"             "platforms;android-35"             "build-tools;35.0.0"
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.6.1' apply false
+          }
+          EOF
 
-      - name: Create Gradle wrapper
-        run: |
-          gradle wrapper --gradle-version 8.7
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.controllerbridge.v6'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'com.controllerbridge.v6'
+                  minSdk 23
+                  targetSdk 35
+                  versionCode 6
+                  versionName '6.0'
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.7.0'
+              implementation 'com.google.android.material:material:1.12.0'
+          }
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:colorAccent">#3F51B5</item>
+                  <item name="android:navigationBarColor">#000000</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:theme="@style/AppTheme"
+                  android:label="Controller Bridge V6"
+                  android:allowBackup="false"
+                  android:supportsRtl="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:screenOrientation="portrait"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/controllerbridge/v6/MainActivity.java <<'EOF'
+          package com.controllerbridge.v6;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.view.InputDevice;
+          import android.view.KeyEvent;
+          import android.view.MotionEvent;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import java.io.BufferedWriter;
+          import java.io.OutputStreamWriter;
+          import java.net.InetSocketAddress;
+          import java.net.Socket;
+          import java.util.Locale;
+
+          public class MainActivity extends Activity {
+              EditText ipBox, portBox;
+              TextView status;
+              BufferedWriter writer;
+              volatile boolean connected = false;
+
+              float lx=0, ly=0, rx=0, ry=0, lt=0, rt=0;
+              int buttons=0;
+
+              @Override public void onCreate(Bundle b) {
+                  super.onCreate(b);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(32,32,32,32);
+
+                  TextView title = new TextView(this);
+                  title.setText("Controller Bridge V6");
+                  title.setTextSize(26);
+                  root.addView(title);
+
+                  TextView info = new TextView(this);
+                  info.setText("Enter the Windows PC IPv4 address shown by ControllerBridgeV6.");
+                  root.addView(info);
+
+                  ipBox = new EditText(this);
+                  ipBox.setHint("PC IP address");
+                  ipBox.setSingleLine(true);
+                  root.addView(ipBox);
+
+                  portBox = new EditText(this);
+                  portBox.setText("5555");
+                  portBox.setSingleLine(true);
+                  portBox.setInputType(2);
+                  root.addView(portBox);
+
+                  Button connect = new Button(this);
+                  connect.setText("CONNECT TO PC");
+                  root.addView(connect);
+
+                  status = new TextView(this);
+                  status.setText("Status: Not connected");
+                  status.setTextSize(18);
+                  root.addView(status);
+
+                  TextView help = new TextView(this);
+                  help.setText("\\nConnect your Bluetooth controller to Android, then use the controller.");
+                  help.setTextSize(16);
+                  root.addView(help);
+
+                  setContentView(root);
+                  connect.setOnClickListener(v -> connect());
+                  root.setFocusableInTouchMode(true);
+                  root.requestFocus();
+              }
+
+              void connect() {
+                  final String ip = ipBox.getText().toString().trim();
+                  final int port;
+                  try { port = Integer.parseInt(portBox.getText().toString().trim()); }
+                  catch(Exception e) {
+                      status.setText("Status: Invalid port");
+                      return;
+                  }
+                  if (ip.isEmpty()) {
+                      status.setText("Status: Enter the PC IP address");
+                      return;
+                  }
+
+                  status.setText("Status: Connecting...");
+                  new Thread(() -> {
+                      try {
+                          Socket s = new Socket();
+                          s.connect(new InetSocketAddress(ip, port), 3000);
+                          writer = new BufferedWriter(new OutputStreamWriter(s.getOutputStream()));
+                          connected = true;
+                          runOnUiThread(() -> status.setText("Status: Connected to " + ip + ":" + port));
+                          send();
+                      } catch(Exception e) {
+                          connected = false;
+                          runOnUiThread(() -> status.setText("Status: Connection failed"));
+                      }
+                  }).start();
+              }
+
+              synchronized void send() {
+                  if (!connected || writer == null) return;
+                  try {
+                      String packet = String.format(Locale.US,
+                          "V5|%d|%d|%d|%d|%d|%d|%d\\n",
+                          (int)(lx*32767), (int)(ly*32767),
+                          (int)(rx*32767), (int)(ry*32767),
+                          (int)(lt*255), (int)(rt*255), buttons);
+                      writer.write(packet);
+                      writer.flush();
+                  } catch(Exception e) {
+                      connected = false;
+                      runOnUiThread(() -> status.setText("Status: Connection lost"));
+                  }
+              }
+
+              @Override public boolean dispatchKeyEvent(KeyEvent e) {
+                  int bit = buttonBit(e.getKeyCode());
+                  if (bit >= 0) {
+                      if (e.getAction() == KeyEvent.ACTION_DOWN) buttons |= (1 << bit);
+                      else if (e.getAction() == KeyEvent.ACTION_UP) buttons &= ~(1 << bit);
+                      send();
+                      return true;
+                  }
+                  return super.dispatchKeyEvent(e);
+              }
+
+              int buttonBit(int c) {
+                  switch(c) {
+                      case KeyEvent.KEYCODE_BUTTON_A: return 0;
+                      case KeyEvent.KEYCODE_BUTTON_B: return 1;
+                      case KeyEvent.KEYCODE_BUTTON_X: return 2;
+                      case KeyEvent.KEYCODE_BUTTON_Y: return 3;
+                      case KeyEvent.KEYCODE_BUTTON_L1: return 4;
+                      case KeyEvent.KEYCODE_BUTTON_R1: return 5;
+                      case KeyEvent.KEYCODE_BUTTON_START: return 6;
+                      case KeyEvent.KEYCODE_BUTTON_SELECT: return 7;
+                      case KeyEvent.KEYCODE_BUTTON_THUMBL: return 8;
+                      case KeyEvent.KEYCODE_BUTTON_THUMBR: return 9;
+                      case KeyEvent.KEYCODE_DPAD_UP: return 10;
+                      case KeyEvent.KEYCODE_DPAD_DOWN: return 11;
+                      case KeyEvent.KEYCODE_DPAD_LEFT: return 12;
+                      case KeyEvent.KEYCODE_DPAD_RIGHT: return 13;
+                      default: return -1;
+                  }
+              }
+
+              @Override public boolean dispatchGenericMotionEvent(MotionEvent e) {
+                  if ((e.getSource() & InputDevice.SOURCE_JOYSTICK) != 0 &&
+                      e.getAction() == MotionEvent.ACTION_MOVE) {
+                      lx = axis(e, MotionEvent.AXIS_X);
+                      ly = axis(e, MotionEvent.AXIS_Y);
+                      rx = axis(e, MotionEvent.AXIS_Z);
+                      ry = axis(e, MotionEvent.AXIS_RZ);
+                      lt = axis(e, MotionEvent.AXIS_LTRIGGER);
+                      rt = axis(e, MotionEvent.AXIS_RTRIGGER);
+                      send();
+                      return true;
+                  }
+                  return super.dispatchGenericMotionEvent(e);
+              }
+
+              float axis(MotionEvent e, int axis) {
+                  float v = e.getAxisValue(axis);
+                  return Math.max(-1f, Math.min(1f, v));
+              }
+          }
+          EOF
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
 
       - name: Build APK
-        run: |
-          chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+        run: gradle --no-daemon assembleDebug
 
       - name: Prepare APK
         run: |
