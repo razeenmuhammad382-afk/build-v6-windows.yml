@@ -24,19 +24,31 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages
+      # GitHub's Ubuntu runner already includes the Android SDK.
+      # We deliberately do not use android-actions/setup-android here,
+      # because that step is what failed in the previous run.
+      - name: Check Android SDK
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          "$ANDROID_HOME/platform-tools/adb" version
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
+
+      - name: Accept Android SDK licenses
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+
+      - name: Install required Android SDK packages
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"             "platform-tools"             "platforms;android-35"             "build-tools;35.0.0"
 
       - name: Create Gradle wrapper
         run: |
           gradle wrapper --gradle-version 8.7
 
       - name: Build APK
-        run: ./gradlew assembleDebug
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
 
       - name: Prepare APK
         run: |
